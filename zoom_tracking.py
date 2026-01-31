@@ -27,7 +27,7 @@ HAND_CONNECTIONS = [
     (0, 17), (17, 18), (18, 19), (19, 20), (5, 9), (9, 13), (13, 17), (17, 5),
 ]
 
-cap = cv2.VideoCapture(1, cv2.CAP_AVFOUNDATION)
+cap = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 cap.set(cv2.CAP_PROP_FPS, 60)
