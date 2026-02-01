@@ -22,7 +22,7 @@ SMOOTH_FACTOR = 0.15
 # --- PYGAME SETUP ---
 pygame.init()
 screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-pygame.display.set_caption("Fusion 360 Controller (Inverted Yaw)")
+pygame.display.set_caption("Fusion 360 Controller (Steering Wheel + Trackball)")
 clock = pygame.time.Clock()
 
 vertices = [
@@ -35,21 +35,45 @@ edges = [
     (0,4), (1,5), (2,6), (3,7)
 ]
 
-# --- MATH HELPERS ---
-def rotate_x(point, angle):
-    x, y, z = point
-    c, s = math.cos(angle), math.sin(angle)
-    return [x, y * c - z * s, y * s + z * c]
+# --- MATRIX MATH HELPERS ---
+def mat_mul(A, B):
+    C = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+    for i in range(3):
+        for j in range(3):
+            C[i][j] = A[i][0]*B[0][j] + A[i][1]*B[1][j] + A[i][2]*B[2][j]
+    return C
 
-def rotate_y(point, angle):
-    x, y, z = point
-    c, s = math.cos(angle), math.sin(angle)
-    return [x * c + z * s, y, -x * s + z * c]
+def mat_vec_mul(M, v):
+    x, y, z = v
+    nx = M[0][0]*x + M[0][1]*y + M[0][2]*z
+    ny = M[1][0]*x + M[1][1]*y + M[1][2]*z
+    nz = M[2][0]*x + M[2][1]*y + M[2][2]*z
+    return [nx, ny, nz]
 
-def rotate_z(point, angle):
-    x, y, z = point
+def get_rot_x(angle):
     c, s = math.cos(angle), math.sin(angle)
-    return [x * c - y * s, x * s + y * c, z]
+    return [[1, 0, 0], [0, c, -s], [0, s, c]]
+
+def get_rot_y(angle):
+    c, s = math.cos(angle), math.sin(angle)
+    return [[c, 0, s], [0, 1, 0], [-s, 0, c]]
+
+def get_rot_z(angle):
+    c, s = math.cos(angle), math.sin(angle)
+    return [[c, -s, 0], [s, c, 0], [0, 0, 1]]
+
+def matrix_to_euler(R):
+    sy = math.sqrt(R[0][0] * R[0][0] + R[1][0] * R[1][0])
+    singular = sy < 1e-6
+    if not singular:
+        x = math.atan2(R[2][1], R[2][2])
+        y = math.atan2(-R[2][0], sy)
+        z = math.atan2(R[1][0], R[0][0])
+    else:
+        x = math.atan2(-R[1][2], R[1][1])
+        y = math.atan2(-R[2][0], sy)
+        z = 0
+    return x, y, z
 
 def project(point, scale, cx, cy):
     x, y, z = point
@@ -57,7 +81,6 @@ def project(point, scale, cx, cy):
     return (int(x * f + cx), int(y * f + cy))
 
 # --- GESTURE RECOGNITION ---
-
 def is_finger_extended(landmarks, tip_idx, pip_idx, wrist):
     tip = landmarks[tip_idx]
     pip = landmarks[pip_idx]
@@ -94,21 +117,20 @@ cap = cv2.VideoCapture(1, cv2.CAP_AVFOUNDATION)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, WINDOW_WIDTH)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, WINDOW_HEIGHT)
 
-# State Variables
+# --- STATE VARIABLES ---
+cur_rotation_matrix = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
 cur_cx, cur_cy = WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2
 cur_scale = 200.0
-cur_pitch, cur_yaw, cur_roll = 0.0, 0.0, 0.0
-
 tgt_cx, tgt_cy = cur_cx, cur_cy
 tgt_scale = cur_scale
-tgt_pitch, tgt_yaw, tgt_roll = 0.0, 0.0, 0.0
 
-# Clutch Offsets
+prev_mx, prev_my = None, None
+prev_angle = None
+
+# Offsets
 off_cx, off_cy = 0, 0
 off_scale = 0
-off_pitch, off_yaw, off_roll = 0.0, 0.0, 0.0
 clutch_active = False
-
 line_color = (0, 255, 0)
 
 with HandLandmarker.create_from_options(options) as landmarker:
@@ -146,58 +168,74 @@ with HandLandmarker.create_from_options(options) as landmarker:
 
             lx, ly = left_hand[8].x, left_hand[8].y
             rx, ry = right_hand[8].x, right_hand[8].y
+            
             mx = (lx + rx) / 2
             my = (ly + ry) / 2
             dist = math.sqrt((rx - lx)**2 + (ry - ly)**2)
             angle = math.atan2(ry - ly, rx - lx)
 
-            # --- CALCULATE RAW YAW (Inverted) ---
-            # We multiply by -1 to invert the direction
-            raw_yaw = -1 * (mx - 0.5) * ROTATION_SENSITIVITY * math.pi
-            
-            # Normal Pitch (Not inverted, unless you want that too)
-            raw_pitch = (my - 0.5) * ROTATION_SENSITIVITY * math.pi
+            if prev_mx is None:
+                prev_mx, prev_my, prev_angle = mx, my, angle
 
             if fist_l and fist_r:
                 mode_text = "Status: CLUTCH LOCKED"
                 line_color = (255, 0, 0)
                 clutch_active = True
+                prev_mx, prev_my, prev_angle = mx, my, angle
                 
             else:
                 if clutch_active:
-                    # Reset Offsets
+                    # Reset offsets
                     off_cx = cur_cx - (mx * WINDOW_WIDTH)
                     off_cy = cur_cy - (my * WINDOW_HEIGHT)
                     off_scale = cur_scale - (dist * ZOOM_SPEED)
-                    off_roll = cur_roll - angle
-                    off_yaw = cur_yaw - raw_yaw
-                    off_pitch = cur_pitch - raw_pitch
+                    prev_mx, prev_my, prev_angle = mx, my, angle
                     clutch_active = False
 
                 if peace_l and peace_r:
-                    mode_text = "Status: 3D ROTATE (Peace Sign)"
+                    # --- GLOBAL TUMBLE (Peace) ---
+                    mode_text = "Status: 3D TUMBLE (Peace Sign)"
                     line_color = (0, 0, 255)
                     
-                    tgt_yaw = raw_yaw + off_yaw
-                    tgt_pitch = raw_pitch + off_pitch
+                    delta_x = (mx - prev_mx) * ROTATION_SENSITIVITY * math.pi
+                    delta_y = (my - prev_my) * ROTATION_SENSITIVITY * math.pi
                     
-                    # Prevent jumping in other modes
+                    # Apply Yaw (Y) and Pitch (X)
+                    if abs(delta_x) > 0.001:
+                        Ry = get_rot_y(-delta_x) # Inverted X for Yaw
+                        cur_rotation_matrix = mat_mul(Ry, cur_rotation_matrix)
+                    if abs(delta_y) > 0.001:
+                        Rx = get_rot_x(delta_y)
+                        cur_rotation_matrix = mat_mul(Rx, cur_rotation_matrix)
+                        
+                    # Sync offsets
                     off_cx = cur_cx - (mx * WINDOW_WIDTH)
                     off_cy = cur_cy - (my * WINDOW_HEIGHT)
                     off_scale = cur_scale - (dist * ZOOM_SPEED)
-                    
+
                 else:
-                    mode_text = "Status: PAN & ZOOM"
+                    # --- PAN, ZOOM, & ROLL (Open) ---
+                    mode_text = "Status: PAN, ZOOM & ROLL"
                     line_color = (0, 255, 0)
                     
+                    # 1. Pan & Zoom
                     tgt_cx = (mx * WINDOW_WIDTH) + off_cx
                     tgt_cy = (my * WINDOW_HEIGHT) + off_cy
                     tgt_scale = (dist * ZOOM_SPEED) + off_scale
-                    tgt_roll = angle + off_roll
                     
-                    # Prevent jumping in rotation
-                    off_yaw = cur_yaw - raw_yaw
-                    off_pitch = cur_pitch - raw_pitch
+                    # 2. Roll (Steering Wheel)
+                    # We calculate the change in angle since last frame
+                    delta_roll = angle - prev_angle
+                    
+                    # Handle the "wrap around" case (jumping from pi to -pi)
+                    if delta_roll > math.pi: delta_roll -= 2*math.pi
+                    if delta_roll < -math.pi: delta_roll += 2*math.pi
+                    
+                    if abs(delta_roll) > 0.002: # Small deadzone
+                        Rz = get_rot_z(delta_roll)
+                        cur_rotation_matrix = mat_mul(Rz, cur_rotation_matrix)
+
+            prev_mx, prev_my, prev_angle = mx, my, angle
 
             p1 = (int(lx * WINDOW_WIDTH), int(ly * WINDOW_HEIGHT))
             p2 = (int(rx * WINDOW_WIDTH), int(ry * WINDOW_HEIGHT))
@@ -207,11 +245,9 @@ with HandLandmarker.create_from_options(options) as landmarker:
         cur_cx += (tgt_cx - cur_cx) * SMOOTH_FACTOR
         cur_cy += (tgt_cy - cur_cy) * SMOOTH_FACTOR
         cur_scale += (tgt_scale - cur_scale) * SMOOTH_FACTOR
-        cur_pitch += (tgt_pitch - cur_pitch) * SMOOTH_FACTOR
-        cur_yaw += (tgt_yaw - cur_yaw) * SMOOTH_FACTOR
-        cur_roll += (tgt_roll - cur_roll) * SMOOTH_FACTOR
 
         # 5. CSV WRITING
+        rot_x_out, rot_y_out, rot_z_out = matrix_to_euler(cur_rotation_matrix)
         norm_pan_x = (cur_cx - WINDOW_WIDTH / 2) / (WINDOW_WIDTH / 2)
         norm_pan_y = -1 * (cur_cy - WINDOW_HEIGHT / 2) / (WINDOW_HEIGHT / 2)
         norm_zoom = cur_scale / 200.0
@@ -219,16 +255,14 @@ with HandLandmarker.create_from_options(options) as landmarker:
         try:
             with open(CSV_PATH, "w") as f:
                 f.write("pan_x,pan_y,zoom,rot_x,rot_y,rot_z\n")
-                f.write(f"{norm_pan_x:.4f},{norm_pan_y:.4f},{norm_zoom:.4f},{cur_pitch:.4f},{cur_yaw:.4f},{cur_roll:.4f}\n")
+                f.write(f"{norm_pan_x:.4f},{norm_pan_y:.4f},{norm_zoom:.4f},{rot_x_out:.4f},{rot_y_out:.4f},{rot_z_out:.4f}\n")
         except:
             pass
 
         # 6. RENDER
         transformed_points = []
         for v in vertices:
-            p = rotate_x(v, cur_pitch)
-            p = rotate_y(p, cur_yaw)
-            p = rotate_z(p, cur_roll)
+            p = mat_vec_mul(cur_rotation_matrix, v)
             transformed_points.append(p)
 
         for edge in edges:
@@ -240,7 +274,7 @@ with HandLandmarker.create_from_options(options) as landmarker:
         tsurf = font.render(mode_text, True, line_color)
         screen.blit(tsurf, (20, 20))
         
-        instr = font.render("Fists = Clutch | Peace = Spin | Open = Move", True, (200, 200, 200))
+        instr = font.render("Fists = Clutch | Peace = Tumble | Open = Move & Roll", True, (200, 200, 200))
         screen.blit(instr, (20, 50))
 
         pygame.display.flip()
