@@ -13,16 +13,21 @@ WINDOW_HEIGHT = 720
 MODEL_PATH = "/Users/jacobroberts/Desktop/ICHack/ichack26/Jacob files/hand_landmarker.task"
 CSV_PATH = "/Users/jacobroberts/Desktop/ICHack/ichack26/Jacob files/fusion_data.csv"
 
-# SENSITIVITY
+# --- TUNING SETTINGS ---
 PAN_SPEED = 1.0
 ZOOM_SPEED = 800.0
+
+# REDUCED SENSITIVITY
 ROTATION_SENSITIVITY = 4.0 
-SMOOTH_FACTOR = 0.15 
+
+# SMOOTHING FACTORS (0.01 = Very Slow/Smooth, 0.9 = Fast/Jittery)
+PAN_ZOOM_SMOOTHING = 0.15 
+ROTATION_SMOOTHING = 0.1  # New extra smoothing for rotation
 
 # --- PYGAME SETUP ---
 pygame.init()
 screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-pygame.display.set_caption("Fusion 360 Controller (Steering Wheel + Trackball)")
+pygame.display.set_caption("Fusion 360 Controller (Smoothed Tumble)")
 clock = pygame.time.Clock()
 
 vertices = [
@@ -113,7 +118,7 @@ options = HandLandmarkerOptions(
     min_tracking_confidence=0.5
 )
 
-cap = cv2.VideoCapture(1, cv2.CAP_AVFOUNDATION)
+cap = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, WINDOW_WIDTH)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, WINDOW_HEIGHT)
 
@@ -126,6 +131,11 @@ tgt_scale = cur_scale
 
 prev_mx, prev_my = None, None
 prev_angle = None
+
+# Variables for rotation smoothing
+smooth_rot_x = 0.0
+smooth_rot_y = 0.0
+smooth_rot_z = 0.0
 
 # Offsets
 off_cx, off_cy = 0, 0
@@ -156,6 +166,12 @@ with HandLandmarker.create_from_options(options) as landmarker:
 
         mode_text = "Status: Idle"
         
+        # Reset smoothed rotation targets to 0 every frame
+        # We only want to rotate if there is ACTIVE input
+        target_rot_x = 0.0
+        target_rot_y = 0.0
+        target_rot_z = 0.0
+
         if len(result.hand_landmarks) == 2:
             hands = sorted(result.hand_landmarks, key=lambda h: h[8].x)
             left_hand = hands[0]
@@ -185,7 +201,6 @@ with HandLandmarker.create_from_options(options) as landmarker:
                 
             else:
                 if clutch_active:
-                    # Reset offsets
                     off_cx = cur_cx - (mx * WINDOW_WIDTH)
                     off_cy = cur_cy - (my * WINDOW_HEIGHT)
                     off_scale = cur_scale - (dist * ZOOM_SPEED)
@@ -197,18 +212,15 @@ with HandLandmarker.create_from_options(options) as landmarker:
                     mode_text = "Status: 3D TUMBLE (Peace Sign)"
                     line_color = (0, 0, 255)
                     
-                    delta_x = (mx - prev_mx) * ROTATION_SENSITIVITY * math.pi
-                    delta_y = (my - prev_my) * ROTATION_SENSITIVITY * math.pi
+                    # Calculate raw Delta
+                    raw_delta_x = (mx - prev_mx) * ROTATION_SENSITIVITY * math.pi
+                    raw_delta_y = (my - prev_my) * ROTATION_SENSITIVITY * math.pi
                     
-                    # Apply Yaw (Y) and Pitch (X)
-                    if abs(delta_x) > 0.001:
-                        Ry = get_rot_y(-delta_x) # Inverted X for Yaw
-                        cur_rotation_matrix = mat_mul(Ry, cur_rotation_matrix)
-                    if abs(delta_y) > 0.001:
-                        Rx = get_rot_x(delta_y)
-                        cur_rotation_matrix = mat_mul(Rx, cur_rotation_matrix)
+                    # Assign to targets (Inverted X for Yaw)
+                    target_rot_y = -raw_delta_x 
+                    target_rot_x = raw_delta_y
                         
-                    # Sync offsets
+                    # Sync offsets so pan/zoom doesn't jump
                     off_cx = cur_cx - (mx * WINDOW_WIDTH)
                     off_cy = cur_cy - (my * WINDOW_HEIGHT)
                     off_scale = cur_scale - (dist * ZOOM_SPEED)
@@ -218,22 +230,18 @@ with HandLandmarker.create_from_options(options) as landmarker:
                     mode_text = "Status: PAN, ZOOM & ROLL"
                     line_color = (0, 255, 0)
                     
-                    # 1. Pan & Zoom
+                    # 1. Pan & Zoom Targets
                     tgt_cx = (mx * WINDOW_WIDTH) + off_cx
                     tgt_cy = (my * WINDOW_HEIGHT) + off_cy
                     tgt_scale = (dist * ZOOM_SPEED) + off_scale
                     
-                    # 2. Roll (Steering Wheel)
-                    # We calculate the change in angle since last frame
+                    # 2. Roll Target
                     delta_roll = angle - prev_angle
-                    
-                    # Handle the "wrap around" case (jumping from pi to -pi)
                     if delta_roll > math.pi: delta_roll -= 2*math.pi
                     if delta_roll < -math.pi: delta_roll += 2*math.pi
                     
-                    if abs(delta_roll) > 0.002: # Small deadzone
-                        Rz = get_rot_z(delta_roll)
-                        cur_rotation_matrix = mat_mul(Rz, cur_rotation_matrix)
+                    if abs(delta_roll) > 0.002:
+                        target_rot_z = delta_roll
 
             prev_mx, prev_my, prev_angle = mx, my, angle
 
@@ -241,10 +249,24 @@ with HandLandmarker.create_from_options(options) as landmarker:
             p2 = (int(rx * WINDOW_WIDTH), int(ry * WINDOW_HEIGHT))
             pygame.draw.line(screen, line_color, p1, p2, 5)
 
-        # 4. SMOOTHING
-        cur_cx += (tgt_cx - cur_cx) * SMOOTH_FACTOR
-        cur_cy += (tgt_cy - cur_cy) * SMOOTH_FACTOR
-        cur_scale += (tgt_scale - cur_scale) * SMOOTH_FACTOR
+        # --- ROTATION SMOOTHING LOOP ---
+        # Smoothly interpolate current rotation speed towards the target speed
+        smooth_rot_x += (target_rot_x - smooth_rot_x) * ROTATION_SMOOTHING
+        smooth_rot_y += (target_rot_y - smooth_rot_y) * ROTATION_SMOOTHING
+        smooth_rot_z += (target_rot_z - smooth_rot_z) * ROTATION_SMOOTHING
+
+        # Apply smoothed rotations to the Matrix
+        if abs(smooth_rot_y) > 0.0001:
+            cur_rotation_matrix = mat_mul(get_rot_y(smooth_rot_y), cur_rotation_matrix)
+        if abs(smooth_rot_x) > 0.0001:
+            cur_rotation_matrix = mat_mul(get_rot_x(smooth_rot_x), cur_rotation_matrix)
+        if abs(smooth_rot_z) > 0.0001:
+            cur_rotation_matrix = mat_mul(get_rot_z(smooth_rot_z), cur_rotation_matrix)
+
+        # --- PAN/ZOOM SMOOTHING ---
+        cur_cx += (tgt_cx - cur_cx) * PAN_ZOOM_SMOOTHING
+        cur_cy += (tgt_cy - cur_cy) * PAN_ZOOM_SMOOTHING
+        cur_scale += (tgt_scale - cur_scale) * PAN_ZOOM_SMOOTHING
 
         # 5. CSV WRITING
         rot_x_out, rot_y_out, rot_z_out = matrix_to_euler(cur_rotation_matrix)
