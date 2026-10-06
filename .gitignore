@@ -218,3 +218,11 @@ __marimo__/
 *.pth
 *.h5
 *.onnx
+
+# macOS
+.DS_Store
+
+# Runtime output / model (download with tools/download_hand_model.py)
+fusion_data.csv
+zoom_data.csv
+hand_landmarker.task

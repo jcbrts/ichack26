@@ -3,6 +3,7 @@ import mediapipe as mp
 import math
 import pygame
 import os
+from pathlib import Path
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python.vision import HandLandmarker, HandLandmarkerOptions, RunningMode
 from mediapipe.tasks.python.core.base_options import BaseOptions
@@ -10,19 +11,20 @@ from mediapipe.tasks.python.core.base_options import BaseOptions
 # --- CONFIGURATION ---
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 720
-MODEL_PATH = "/Users/jacobroberts/Desktop/ICHack/ichack26/Jacob files/hand_landmarker.task"
-CSV_PATH = "/Users/jacobroberts/Desktop/ICHack/ichack26/Jacob files/fusion_data.csv"
+ROOT = Path(__file__).resolve().parent.parent
+MODEL_PATH = str(ROOT / "hand_landmarker.task")  # fetch with tools/download_hand_model.py
+CSV_PATH = str(ROOT / "fusion_data.csv")          # written every frame
 
 # --- TUNING SETTINGS ---
 PAN_SPEED = 1.0
 ZOOM_SPEED = 800.0
 
-# REDUCED SENSITIVITY
-ROTATION_SENSITIVITY = 4.0 
+# REDUCED SENSITIVITY (Was 4.0)
+ROTATION_SENSITIVITY = 1.5 
 
 # SMOOTHING FACTORS (0.01 = Very Slow/Smooth, 0.9 = Fast/Jittery)
 PAN_ZOOM_SMOOTHING = 0.15 
-ROTATION_SMOOTHING = 0.1  # New extra smoothing for rotation
+ROTATION_SMOOTHING = 0.08  # New extra smoothing for rotation
 
 # --- PYGAME SETUP ---
 pygame.init()
@@ -118,7 +120,7 @@ options = HandLandmarkerOptions(
     min_tracking_confidence=0.5
 )
 
-cap = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)
+cap = cv2.VideoCapture(1, cv2.CAP_AVFOUNDATION)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, WINDOW_WIDTH)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, WINDOW_HEIGHT)
 

@@ -3,7 +3,7 @@ import os
 import urllib.request
 
 MODEL_URL = "https://storage.googleapis.com/mediapipe-assets/hand_landmarker.task"
-MODEL_PATH = "hand_landmarker.task"
+MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hand_landmarker.task")
 
 if not os.path.exists(MODEL_PATH):
     print("Downloading hand landmark model...")
